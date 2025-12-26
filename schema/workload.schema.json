@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IWC Workload Request v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "prompt", "max_output_tokens", "arrival_time_ms"],
+  "properties": {
+    "request_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": ["string", "null"] },
+    "turn_id": { "type": ["integer", "null"], "minimum": 0 },
+
+    "prompt": { "type": "string" },
+    "prompt_format": {
+      "type": "string",
+      "enum": ["raw", "chatml", "openai_messages"]
+    },
+
+    "max_output_tokens": { "type": "integer", "minimum": 1 },
+    "stop": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+
+    "temperature": { "type": "number", "minimum": 0.0 },
+    "top_p": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "seed": { "type": ["integer", "null"] },
+
+    "arrival_time_ms": { "type": "integer", "minimum": 0 },
+    "streaming": { "type": "boolean" },
+    "cancel_after_ms": { "type": ["integer", "null"], "minimum": 0 }
+  }
+}
