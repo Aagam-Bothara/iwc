@@ -1,4 +1,4 @@
-COPY-PASTE README.md
+
 # IWC — Inference Workload Compiler
 
 IWC is a small but focused tool that **decouples datasets from LLM inference engines** by compiling them into a **canonical workload format**.
