@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iwc"
-version = "0.1.0"
+version = "0.1.1"
 description = "Inference Workload Compiler: compile arbitrary datasets into a canonical LLM inference workload."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,3 +15,5 @@ dependencies = [
 
 [project.scripts]
 iwc = "iwc.cli:main"
+[tool.setuptools]
+packages = ["iwc"]

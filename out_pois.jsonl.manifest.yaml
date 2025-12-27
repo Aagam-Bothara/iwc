@@ -1,0 +1,24 @@
+iwc_version: 0.1.0
+compiler: simple-json
+generated_at_utc: '2025-12-27T08:25:05Z'
+input:
+  path: data.json
+  sha256: 8f723f47d9f8751a1355c53dc13fa373b7a51a546e08ba8f12625fa50e7a30bd
+output:
+  path: out_pois.jsonl
+  sha256: a01e989f23e13df3d32b6bfb14811396209f09951dc88411758a9479b2442819
+schema:
+  path: /home/cc/iwc/schema/workload.schema.json
+  sha256: fe139140d24117cdb94b50e76b092d0b4f322f722aaa9b9f894ad55f5bc776bc
+summary:
+  num_requests: 3
+  arrival_span_ms: 29
+config:
+  max_output_tokens: 128
+  temperature: 0.0
+  top_p: 1.0
+  streaming: false
+  arrival: poisson
+  arrival_step_ms: 100
+  rate_rps: 5.0
+  seed: 123

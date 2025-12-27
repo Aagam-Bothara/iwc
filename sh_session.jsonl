@@ -1,0 +1,2 @@
+{"arrival_time_ms":0,"max_output_tokens":128,"prompt":"User: Explain KV cache in one sentence.\nAssistant: KV cache stores past attention keys/values to speed up decoding.\nUser: Now explain TTFT briefly.","request_id":"req-000001","streaming":false,"temperature":0.0,"top_p":1.0}
+{"arrival_time_ms":100,"max_output_tokens":128,"prompt":"User: Write a haiku about GPUs.","request_id":"req-000002","streaming":false,"temperature":0.0,"top_p":1.0}
