@@ -59,13 +59,13 @@ class WorkloadReport:
 
     task_counts: Counter[str]
     tag_counts: Counter[str]
+
     semantic_present: int
     streaming_true: int
     streaming_false: int
     prompt_format_counts: Counter[str]
     session_id_present: int
     turn_id_present: int
-
 
 
 def build_report(path: Path) -> WorkloadReport:
@@ -75,21 +75,19 @@ def build_report(path: Path) -> WorkloadReport:
 
     task_counts: Counter[str] = Counter()
     tag_counts: Counter[str] = Counter()
-    semantic_present = 0
 
+    semantic_present = 0
     streaming_true = 0
     streaming_false = 0
-
     prompt_format_counts: Counter[str] = Counter()
-
     session_id_present = 0
     turn_id_present = 0
-
 
     n = 0
     for req in read_jsonl(path):
         n += 1
-                # streaming
+
+        # streaming
         streaming = req.get("streaming")
         if streaming is True:
             streaming_true += 1
@@ -104,12 +102,13 @@ def build_report(path: Path) -> WorkloadReport:
             prompt_format_counts["(missing)"] += 1
 
         # session_id / turn_id
-        if isinstance(req.get("session_id"), str) and req.get("session_id"):
+        sid = req.get("session_id")
+        if isinstance(sid, str) and sid.strip():
             session_id_present += 1
-        if isinstance(req.get("turn_id"), int):
-            turn_id_present += 1
 
-        
+        tid = req.get("turn_id")
+        if isinstance(tid, int):
+            turn_id_present += 1
 
         # arrival_time_ms (required by schema)
         at = req.get("arrival_time_ms")
@@ -126,11 +125,15 @@ def build_report(path: Path) -> WorkloadReport:
         if isinstance(prompt, str):
             prompt_chars.append(len(prompt))
 
+        # semantic (optional)
         sem = req.get("semantic")
         if isinstance(sem, dict):
+            semantic_present += 1
+
             task = sem.get("task")
             if isinstance(task, str) and task.strip():
                 task_counts[task] += 1
+
             tags = sem.get("tags")
             if isinstance(tags, list):
                 for t in tags:
@@ -141,7 +144,9 @@ def build_report(path: Path) -> WorkloadReport:
     max_at = max(arrivals) if arrivals else None
     span = int(max_at - min_at) if (min_at is not None and max_at is not None) else 0
 
-    def stats(vals: list[int]) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[int], Optional[int], Optional[int]]:
+    def stats(
+        vals: list[int],
+    ) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[int], Optional[int], Optional[int]]:
         if not vals:
             return (None, None, None, None, None, None)
         s = sorted(vals)
@@ -183,8 +188,6 @@ def build_report(path: Path) -> WorkloadReport:
         prompt_format_counts=prompt_format_counts,
         session_id_present=session_id_present,
         turn_id_present=turn_id_present,
-
-        
     )
 
 
@@ -195,20 +198,36 @@ def format_report(r: WorkloadReport, *, top_k_tags: int = 10) -> str:
     lines.append("-" * 60)
     lines.append(f"requests: {r.num_requests}")
     lines.append(f"arrival_time_ms: min={r.min_arrival_ms}  max={r.max_arrival_ms}  span={r.arrival_span_ms}")
+
     lines.append("")
     lines.append("coverage:")
-    lines.append(f"  semantic present: {r.semantic_present}/{r.num_requests} ({round(_pct(r.semantic_present, r.num_requests), 2)}%)")
+    lines.append(
+        f"  semantic present: {r.semantic_present}/{r.num_requests} "
+        f"({round(_pct(r.semantic_present, r.num_requests), 2)}%)"
+    )
     lines.append(f"  streaming: true={r.streaming_true}  false={r.streaming_false}")
-    lines.append(f"  session_id present: {r.session_id_present}/{r.num_requests} ({round(_pct(r.session_id_present, r.num_requests), 2)}%)")
-    lines.append(f"  turn_id present: {r.turn_id_present}/{r.num_requests} ({round(_pct(r.turn_id_present, r.num_requests), 2)}%)")
+    lines.append(
+        f"  session_id present: {r.session_id_present}/{r.num_requests} "
+        f"({round(_pct(r.session_id_present, r.num_requests), 2)}%)"
+    )
+    lines.append(
+        f"  turn_id present: {r.turn_id_present}/{r.num_requests} "
+        f"({round(_pct(r.turn_id_present, r.num_requests), 2)}%)"
+    )
 
     lines.append("")
     lines.append("max_output_tokens:")
-    lines.append(f"  min={r.mot_min}  avg={None if r.mot_avg is None else round(r.mot_avg, 2)}  p50={r.mot_p50}  p90={r.mot_p90}  p99={r.mot_p99}  max={r.mot_max}")
+    lines.append(
+        f"  min={r.mot_min}  avg={None if r.mot_avg is None else round(r.mot_avg, 2)}  "
+        f"p50={r.mot_p50}  p90={r.mot_p90}  p99={r.mot_p99}  max={r.mot_max}"
+    )
 
     lines.append("")
     lines.append("prompt length (chars):")
-    lines.append(f"  min={r.prompt_chars_min}  avg={None if r.prompt_chars_avg is None else round(r.prompt_chars_avg, 2)}  p50={r.prompt_chars_p50}  p90={r.prompt_chars_p90}  p99={r.prompt_chars_p99}  max={r.prompt_chars_max}")
+    lines.append(
+        f"  min={r.prompt_chars_min}  avg={None if r.prompt_chars_avg is None else round(r.prompt_chars_avg, 2)}  "
+        f"p50={r.prompt_chars_p50}  p90={r.prompt_chars_p90}  p99={r.prompt_chars_p99}  max={r.prompt_chars_max}"
+    )
 
     lines.append("")
     lines.append("semantic.task distribution:")
@@ -230,5 +249,12 @@ def format_report(r: WorkloadReport, *, top_k_tags: int = 10) -> str:
     else:
         lines.append("  (none)")
 
+    lines.append("")
+    lines.append(f"top tags (top {top_k_tags}):")
+    if r.tag_counts:
+        for tag, cnt in r.tag_counts.most_common(top_k_tags):
+            lines.append(f"  - {tag}: {cnt}")
+    else:
+        lines.append("  (none)")
 
     return "\n".join(lines)
