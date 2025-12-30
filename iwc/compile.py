@@ -16,6 +16,99 @@ from iwc.arrival import arrival_fixed_step, arrival_poisson
 # -------------------------
 # Shared helpers
 # -------------------------
+def _load_prompts_jsonl(path: Path) -> list[dict[str, Any]]:
+    """
+    Accepts JSONL where each line is either:
+      - "prompt string"
+      - {"prompt": "...", "semantic": {...}}
+    Returns list of rows: {"prompt": str, "semantic": optional}
+    """
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{path}:{line_no}: invalid JSON: {e}") from e
+
+            if isinstance(obj, str):
+                prompt = obj
+                row: dict[str, Any] = {"prompt": prompt}
+            elif isinstance(obj, dict) and isinstance(obj.get("prompt"), str):
+                row = dict(obj)  # shallow copy
+                prompt = row["prompt"]
+            else:
+                raise ValueError(
+                    f"{path}:{line_no}: expected string or object with 'prompt' string"
+                )
+
+            if not str(prompt).strip():
+                raise ValueError(f"{path}:{line_no}: empty/blank prompt")
+
+            cleaned: dict[str, Any] = {"prompt": str(prompt)}
+            if "semantic" in row:
+                cleaned["semantic"] = row["semantic"]
+            rows.append(cleaned)
+
+    if not rows:
+        raise ValueError("input JSONL contains 0 prompts")
+
+    return rows
+
+
+def compile_jsonl_prompts(
+    input_path: Path,
+    output_path: Path,
+    manifest_path: Path,
+    cfg: SimpleJsonConfig,
+    *,
+    prompt_format: str = "text",
+) -> None:
+    rows = _load_prompts_jsonl(input_path)
+    n = len(rows)
+
+    arrivals_ms = _arrival_times(n, cfg.arrival, cfg.arrival_step_ms, cfg.rate_rps, cfg.seed)
+    arrival_span_ms = int(max(arrivals_ms) - min(arrivals_ms)) if arrivals_ms else 0
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
+        for idx, (row, at_ms) in enumerate(zip(rows, arrivals_ms), start=1):
+            req = {
+                "request_id": f"req-{idx:06d}",
+                "prompt": row["prompt"],
+                "prompt_format": prompt_format,
+                "max_output_tokens": int(cfg.max_output_tokens),
+                "arrival_time_ms": int(at_ms),
+                "temperature": float(cfg.temperature),
+                "top_p": float(cfg.top_p),
+                "streaming": bool(cfg.streaming),
+            }
+            if "semantic" in row and row["semantic"] is not None:
+                req["semantic"] = row["semantic"]
+            f.write(_canonical_json_line(req) + "\n")
+
+    _write_manifest(
+        compiler="jsonl-prompts",
+        input_path=input_path,
+        output_path=output_path,
+        manifest_path=manifest_path,
+        summary={"num_requests": n, "arrival_span_ms": arrival_span_ms},
+        cfg={
+            "prompt_format": prompt_format,
+            "max_output_tokens": cfg.max_output_tokens,
+            "temperature": cfg.temperature,
+            "top_p": cfg.top_p,
+            "streaming": cfg.streaming,
+            "arrival": cfg.arrival,
+            "arrival_step_ms": cfg.arrival_step_ms,
+            "rate_rps": cfg.rate_rps,
+            "seed": cfg.seed,
+        },
+    )
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -81,6 +174,7 @@ def _write_manifest(
 # simple-json compiler
 # -------------------------
 
+
 @dataclass(frozen=True)
 class SimpleJsonConfig:
     max_output_tokens: int = 128
@@ -140,6 +234,8 @@ def compile_simple_json(
     output_path: Path,
     manifest_path: Path,
     cfg: SimpleJsonConfig,
+    *,
+    prompt_format: str = "text",
 ) -> None:
     rows = _load_simple_json(input_path)
     n = len(rows)
@@ -153,6 +249,7 @@ def compile_simple_json(
             req = {
                 "request_id": f"req-{idx:06d}",
                 "prompt": row["prompt"],
+                "prompt_format": prompt_format,
                 "max_output_tokens": int(cfg.max_output_tokens),
                 "arrival_time_ms": int(at_ms),
                 "temperature": float(cfg.temperature),
@@ -171,6 +268,7 @@ def compile_simple_json(
         manifest_path=manifest_path,
         summary={"num_requests": n, "arrival_span_ms": arrival_span_ms},
         cfg={
+            "prompt_format": prompt_format,
             "max_output_tokens": cfg.max_output_tokens,
             "temperature": cfg.temperature,
             "top_p": cfg.top_p,
@@ -187,6 +285,7 @@ def compile_simple_json(
 # ShareGPT compiler
 # -------------------------
 
+
 @dataclass(frozen=True)
 class ShareGPTConfig:
     """
@@ -198,6 +297,8 @@ class ShareGPTConfig:
     user_tag: str = "User"
     assistant_tag: str = "Assistant"
     separator: str = "\n"
+
+    prompt_format: str = "text"
 
     max_output_tokens: int = 128
     temperature: float = 0.0
@@ -230,7 +331,7 @@ def _extract_sharegpt_turns(obj: dict[str, Any]) -> list[tuple[str, str]]:
             if not isinstance(val, str):
                 continue
 
-            role = None
+            role: Optional[str] = None
             if frm in ("human", "user"):
                 role = "user"
             elif frm in ("gpt", "assistant"):
@@ -262,7 +363,6 @@ def _sharegpt_prompt_from_turns(turns: list[tuple[str, str]], cfg: ShareGPTConfi
         return ""
 
     if cfg.mode == "session":
-        # Build a single prompt transcript: "User: ...\nAssistant: ...\nUser: ..."
         lines: list[str] = []
         for role, text in turns:
             tag = cfg.user_tag if role == "user" else cfg.assistant_tag
@@ -309,6 +409,7 @@ def compile_sharegpt(
             req = {
                 "request_id": f"req-{i:06d}",
                 "prompt": prompt,
+                "prompt_format": cfg.prompt_format,
                 "max_output_tokens": int(cfg.max_output_tokens),
                 "arrival_time_ms": int(at_ms),
                 "temperature": float(cfg.temperature),
@@ -340,6 +441,7 @@ def compile_sharegpt(
             "user_tag": cfg.user_tag,
             "assistant_tag": cfg.assistant_tag,
             "separator": cfg.separator.encode("unicode_escape").decode("ascii"),
+            "prompt_format": cfg.prompt_format,
             "max_output_tokens": cfg.max_output_tokens,
             "temperature": cfg.temperature,
             "top_p": cfg.top_p,
