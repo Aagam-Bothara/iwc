@@ -86,6 +86,7 @@ def compile_jsonl_prompts(
                 "top_p": float(cfg.top_p),
                 "streaming": bool(cfg.streaming),
             }
+            
             if "semantic" in row and row["semantic"] is not None:
                 req["semantic"] = row["semantic"]
             f.write(_canonical_json_line(req) + "\n")
@@ -384,6 +385,7 @@ def compile_sharegpt(
 
     prompts: list[str] = []
     skipped = 0
+    req.setdefault("semantic", {"task": "chat", "tags": ["sharegpt"]})
 
     for obj in data:
         if not isinstance(obj, dict):
