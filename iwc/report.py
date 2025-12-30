@@ -59,6 +59,13 @@ class WorkloadReport:
 
     task_counts: Counter[str]
     tag_counts: Counter[str]
+    semantic_present: int
+    streaming_true: int
+    streaming_false: int
+    prompt_format_counts: Counter[str]
+    session_id_present: int
+    turn_id_present: int
+
 
 
 def build_report(path: Path) -> WorkloadReport:
@@ -68,10 +75,41 @@ def build_report(path: Path) -> WorkloadReport:
 
     task_counts: Counter[str] = Counter()
     tag_counts: Counter[str] = Counter()
+    semantic_present = 0
+
+    streaming_true = 0
+    streaming_false = 0
+
+    prompt_format_counts: Counter[str] = Counter()
+
+    session_id_present = 0
+    turn_id_present = 0
+
 
     n = 0
     for req in read_jsonl(path):
         n += 1
+                # streaming
+        streaming = req.get("streaming")
+        if streaming is True:
+            streaming_true += 1
+        elif streaming is False:
+            streaming_false += 1
+
+        # prompt_format
+        pf = req.get("prompt_format")
+        if isinstance(pf, str) and pf.strip():
+            prompt_format_counts[pf] += 1
+        else:
+            prompt_format_counts["(missing)"] += 1
+
+        # session_id / turn_id
+        if isinstance(req.get("session_id"), str) and req.get("session_id"):
+            session_id_present += 1
+        if isinstance(req.get("turn_id"), int):
+            turn_id_present += 1
+
+        
 
         # arrival_time_ms (required by schema)
         at = req.get("arrival_time_ms")
@@ -139,6 +177,14 @@ def build_report(path: Path) -> WorkloadReport:
         prompt_chars_max=pc_max,
         task_counts=task_counts,
         tag_counts=tag_counts,
+        semantic_present=semantic_present,
+        streaming_true=streaming_true,
+        streaming_false=streaming_false,
+        prompt_format_counts=prompt_format_counts,
+        session_id_present=session_id_present,
+        turn_id_present=turn_id_present,
+
+        
     )
 
 
@@ -149,6 +195,12 @@ def format_report(r: WorkloadReport, *, top_k_tags: int = 10) -> str:
     lines.append("-" * 60)
     lines.append(f"requests: {r.num_requests}")
     lines.append(f"arrival_time_ms: min={r.min_arrival_ms}  max={r.max_arrival_ms}  span={r.arrival_span_ms}")
+    lines.append("")
+    lines.append("coverage:")
+    lines.append(f"  semantic present: {r.semantic_present}/{r.num_requests} ({round(_pct(r.semantic_present, r.num_requests), 2)}%)")
+    lines.append(f"  streaming: true={r.streaming_true}  false={r.streaming_false}")
+    lines.append(f"  session_id present: {r.session_id_present}/{r.num_requests} ({round(_pct(r.session_id_present, r.num_requests), 2)}%)")
+    lines.append(f"  turn_id present: {r.turn_id_present}/{r.num_requests} ({round(_pct(r.turn_id_present, r.num_requests), 2)}%)")
 
     lines.append("")
     lines.append("max_output_tokens:")
@@ -161,21 +213,22 @@ def format_report(r: WorkloadReport, *, top_k_tags: int = 10) -> str:
     lines.append("")
     lines.append("semantic.task distribution:")
     if r.task_counts:
-        total_labeled = sum(r.task_counts.values())
+        labeled = sum(r.task_counts.values())
         for task, cnt in r.task_counts.most_common():
             lines.append(f"  - {task}: {cnt} ({round(_pct(cnt, r.num_requests), 2)}%)")
-        if total_labeled < r.num_requests:
-            unlabeled = r.num_requests - total_labeled
-            lines.append(f"  - (missing): {unlabeled} ({round(_pct(unlabeled, r.num_requests), 2)}%)")
+        missing = r.num_requests - labeled
+        if missing > 0:
+            lines.append(f"  - (missing): {missing} ({round(_pct(missing, r.num_requests), 2)}%)")
     else:
         lines.append("  (none)")
 
     lines.append("")
-    lines.append(f"top tags (top {top_k_tags}):")
-    if r.tag_counts:
-        for tag, cnt in r.tag_counts.most_common(top_k_tags):
-            lines.append(f"  - {tag}: {cnt}")
+    lines.append("prompt_format distribution:")
+    if r.prompt_format_counts:
+        for k, v in r.prompt_format_counts.most_common():
+            lines.append(f"  - {k}: {v} ({round(_pct(v, r.num_requests), 2)}%)")
     else:
         lines.append("  (none)")
+
 
     return "\n".join(lines)
