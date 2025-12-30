@@ -1,6 +1,8 @@
 import argparse
 import json
 from pathlib import Path
+from iwc.report import build_report, format_report
+
 
 import jsonschema
 from iwc.export import export_aiperf
@@ -49,6 +51,9 @@ def cmd_validate(args: argparse.Namespace) -> None:
         else:
             validate_jsonl(path, schema)
             print(f"OK  {path}")
+def cmd_report(args: argparse.Namespace) -> None:
+    r = build_report(Path(args.input))
+    print(format_report(r, top_k_tags=args.top_k_tags))
 
 
 def cmd_compile_simple_json(args: argparse.Namespace) -> None:
@@ -169,7 +174,13 @@ def main() -> None:
     p_ai.add_argument("--manifest", default=None, help="Path to output export manifest YAML. Default: <output>.manifest.yaml")
     p_ai.add_argument("--source-manifest", default=None, help="Compile manifest YAML to link for provenance.")
     p_ai.add_argument("--time-mode", choices=["timestamp", "delay"], default="timestamp")
-
+    # --------------------
+    # report
+    # --------------------
+    p_rep = sub.add_parser("report", help="Summarize a canonical workload JSONL (basic stats + semantic breakdown).")
+    p_rep.add_argument("--input", required=True, help="Path to canonical workload JSONL.")
+    p_rep.add_argument("--top-k-tags", type=int, default=10, help="How many tags to show.")
+    p_rep.set_defaults(func=cmd_report)
     args = parser.parse_args()
     args.func(args)
 
