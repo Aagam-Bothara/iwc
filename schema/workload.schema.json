@@ -15,6 +15,28 @@
       "enum": ["raw", "chatml", "openai_messages"]
     },
 
+    "semantic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "task": {
+          "type": "string",
+          "enum": [
+            "chat",
+            "qa",
+            "summarization",
+            "reasoning",
+            "classification",
+            "code",
+            "translation",
+            "other"
+          ]
+        },
+        "difficulty": { "type": "string", "enum": ["low", "medium", "high"] },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
     "max_output_tokens": { "type": "integer", "minimum": 1 },
     "stop": {
       "type": "array",
