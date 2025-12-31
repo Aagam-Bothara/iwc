@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple
 
-def report_to_dict(r: WorkloadReport, *, top_k_tags: int = 10) -> dict[str, Any]:
+
+def report_to_dict(r: "WorkloadReport", *, top_k_tags: int = 10) -> dict[str, Any]:
     return {
         "num_requests": r.num_requests,
         "arrival_time_ms": {
@@ -23,6 +24,14 @@ def report_to_dict(r: WorkloadReport, *, top_k_tags: int = 10) -> dict[str, Any]
             "session_id_present_pct": _pct(r.session_id_present, r.num_requests),
             "turn_id_present": r.turn_id_present,
             "turn_id_present_pct": _pct(r.turn_id_present, r.num_requests),
+            "prompt_format_missing": r.prompt_format_missing,
+            "prompt_format_missing_pct": _pct(r.prompt_format_missing, r.num_requests),
+            "task_present": r.task_present,
+            "task_present_pct": _pct(r.task_present, r.num_requests),
+            "difficulty_present": r.difficulty_present,
+            "difficulty_present_pct": _pct(r.difficulty_present, r.num_requests),
+            "tags_present": r.tags_present,
+            "tags_present_pct": _pct(r.tags_present, r.num_requests),
         },
         "max_output_tokens": {
             "min": r.mot_min,
@@ -42,10 +51,13 @@ def report_to_dict(r: WorkloadReport, *, top_k_tags: int = 10) -> dict[str, Any]
         },
         "semantic": {
             "task_counts": dict(r.task_counts),
+            "difficulty_counts": dict(r.difficulty_counts),
             "top_tags": [{"tag": k, "count": v} for k, v in r.tag_counts.most_common(top_k_tags)],
         },
         "prompt_format_counts": dict(r.prompt_format_counts),
+        "warnings": list(r.warnings),
     }
+
 
 def read_jsonl(path: Path) -> Iterator[Dict[str, Any]]:
     with path.open("r", encoding="utf-8") as f:
@@ -57,6 +69,8 @@ def read_jsonl(path: Path) -> Iterator[Dict[str, Any]]:
                 obj = json.loads(line)
             except json.JSONDecodeError as e:
                 raise ValueError(f"{path}:{line_no}: invalid JSON: {e}") from e
+            if not isinstance(obj, dict):
+                raise ValueError(f"{path}:{line_no}: expected JSON object per line")
             yield obj
 
 
@@ -65,7 +79,7 @@ def _pct(n: int, d: int) -> float:
 
 
 def _percentile(sorted_vals: list[int], p: float) -> Optional[int]:
-    """Nearest-rank percentile. p in [0,100]."""
+    """Nearest-rank-ish percentile. p in [0,100]."""
     if not sorted_vals:
         return None
     if p <= 0:
@@ -98,14 +112,25 @@ class WorkloadReport:
     prompt_chars_max: Optional[int]
 
     task_counts: Counter[str]
+    difficulty_counts: Counter[str]
     tag_counts: Counter[str]
 
     semantic_present: int
     streaming_true: int
     streaming_false: int
+
     prompt_format_counts: Counter[str]
+    prompt_format_missing: int
+
     session_id_present: int
     turn_id_present: int
+
+    # per-request presence (more robust than summing counters)
+    task_present: int
+    difficulty_present: int
+    tags_present: int
+
+    warnings: Tuple[str, ...]
 
 
 def build_report(path: Path) -> WorkloadReport:
@@ -114,14 +139,22 @@ def build_report(path: Path) -> WorkloadReport:
     prompt_chars: list[int] = []
 
     task_counts: Counter[str] = Counter()
+    difficulty_counts: Counter[str] = Counter()
     tag_counts: Counter[str] = Counter()
 
     semantic_present = 0
     streaming_true = 0
     streaming_false = 0
+
     prompt_format_counts: Counter[str] = Counter()
+    prompt_format_missing = 0
+
     session_id_present = 0
     turn_id_present = 0
+
+    task_present = 0
+    difficulty_present = 0
+    tags_present = 0
 
     n = 0
     for req in read_jsonl(path):
@@ -140,6 +173,7 @@ def build_report(path: Path) -> WorkloadReport:
             prompt_format_counts[pf] += 1
         else:
             prompt_format_counts["(missing)"] += 1
+            prompt_format_missing += 1
 
         # session_id / turn_id
         sid = req.get("session_id")
@@ -170,15 +204,28 @@ def build_report(path: Path) -> WorkloadReport:
         if isinstance(sem, dict):
             semantic_present += 1
 
+            # task
             task = sem.get("task")
             if isinstance(task, str) and task.strip():
+                task_present += 1
                 task_counts[task] += 1
 
+            # difficulty
+            diff = sem.get("difficulty")
+            if isinstance(diff, str) and diff.strip():
+                difficulty_present += 1
+                difficulty_counts[diff] += 1
+
+            # tags
             tags = sem.get("tags")
             if isinstance(tags, list):
+                any_tag = False
                 for t in tags:
                     if isinstance(t, str) and t.strip():
+                        any_tag = True
                         tag_counts[t] += 1
+                if any_tag:
+                    tags_present += 1
 
     min_at = min(arrivals) if arrivals else None
     max_at = max(arrivals) if arrivals else None
@@ -203,6 +250,28 @@ def build_report(path: Path) -> WorkloadReport:
     mot_min, mot_avg, mot_p50, mot_p90, mot_p99, mot_max = stats(max_out)
     pc_min, pc_avg, pc_p50, pc_p90, pc_p99, pc_max = stats(prompt_chars)
 
+    warnings: list[str] = []
+    if n > 0:
+        if prompt_format_missing > 0:
+            warnings.append(
+                f"prompt_format missing in {prompt_format_missing}/{n} ({round(_pct(prompt_format_missing, n), 2)}%)"
+            )
+        missing_sem = n - semantic_present
+        if missing_sem > 0:
+            warnings.append(
+                f"semantic missing in {missing_sem}/{n} ({round(_pct(missing_sem, n), 2)}%)"
+            )
+        missing_task = n - task_present
+        if missing_task > 0:
+            warnings.append(
+                f"semantic.task missing in {missing_task}/{n} ({round(_pct(missing_task, n), 2)}%)"
+            )
+        missing_diff = n - difficulty_present
+        if missing_diff > 0:
+            warnings.append(
+                f"semantic.difficulty missing in {missing_diff}/{n} ({round(_pct(missing_diff, n), 2)}%)"
+            )
+
     return WorkloadReport(
         num_requests=n,
         min_arrival_ms=min_at,
@@ -221,13 +290,19 @@ def build_report(path: Path) -> WorkloadReport:
         prompt_chars_p99=pc_p99,
         prompt_chars_max=pc_max,
         task_counts=task_counts,
+        difficulty_counts=difficulty_counts,
         tag_counts=tag_counts,
         semantic_present=semantic_present,
         streaming_true=streaming_true,
         streaming_false=streaming_false,
         prompt_format_counts=prompt_format_counts,
+        prompt_format_missing=prompt_format_missing,
         session_id_present=session_id_present,
         turn_id_present=turn_id_present,
+        task_present=task_present,
+        difficulty_present=difficulty_present,
+        tags_present=tags_present,
+        warnings=tuple(warnings),
     )
 
 
@@ -238,6 +313,12 @@ def format_report(r: WorkloadReport, *, top_k_tags: int = 10) -> str:
     lines.append("-" * 60)
     lines.append(f"requests: {r.num_requests}")
     lines.append(f"arrival_time_ms: min={r.min_arrival_ms}  max={r.max_arrival_ms}  span={r.arrival_span_ms}")
+
+    if r.warnings:
+        lines.append("")
+        lines.append("WARNINGS:")
+        for w in r.warnings:
+            lines.append(f"  - {w}")
 
     lines.append("")
     lines.append("coverage:")
@@ -254,6 +335,10 @@ def format_report(r: WorkloadReport, *, top_k_tags: int = 10) -> str:
         f"  turn_id present: {r.turn_id_present}/{r.num_requests} "
         f"({round(_pct(r.turn_id_present, r.num_requests), 2)}%)"
     )
+    lines.append(
+        f"  tags present: {r.tags_present}/{r.num_requests} "
+        f"({round(_pct(r.tags_present, r.num_requests), 2)}%)"
+    )
 
     lines.append("")
     lines.append("max_output_tokens:")
@@ -269,18 +354,31 @@ def format_report(r: WorkloadReport, *, top_k_tags: int = 10) -> str:
         f"p50={r.prompt_chars_p50}  p90={r.prompt_chars_p90}  p99={r.prompt_chars_p99}  max={r.prompt_chars_max}"
     )
 
+    # semantic.task distribution
     lines.append("")
     lines.append("semantic.task distribution:")
     if r.task_counts:
-        labeled = sum(r.task_counts.values())
         for task, cnt in r.task_counts.most_common():
             lines.append(f"  - {task}: {cnt} ({round(_pct(cnt, r.num_requests), 2)}%)")
-        missing = r.num_requests - labeled
+        missing = r.num_requests - r.task_present
         if missing > 0:
             lines.append(f"  - (missing): {missing} ({round(_pct(missing, r.num_requests), 2)}%)")
     else:
         lines.append("  (none)")
 
+    # semantic.difficulty distribution
+    lines.append("")
+    lines.append("semantic.difficulty distribution:")
+    if r.difficulty_counts:
+        for diff, cnt in r.difficulty_counts.most_common():
+            lines.append(f"  - {diff}: {cnt} ({round(_pct(cnt, r.num_requests), 2)}%)")
+        missing = r.num_requests - r.difficulty_present
+        if missing > 0:
+            lines.append(f"  - (missing): {missing} ({round(_pct(missing, r.num_requests), 2)}%)")
+    else:
+        lines.append("  (none)")
+
+    # prompt_format distribution
     lines.append("")
     lines.append("prompt_format distribution:")
     if r.prompt_format_counts:
@@ -289,6 +387,7 @@ def format_report(r: WorkloadReport, *, top_k_tags: int = 10) -> str:
     else:
         lines.append("  (none)")
 
+    # top tags
     lines.append("")
     lines.append(f"top tags (top {top_k_tags}):")
     if r.tag_counts:
