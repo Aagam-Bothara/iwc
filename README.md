@@ -1,169 +1,144 @@
+# IWC — Inference Workload Characterizer
 
-# IWC — Inference Workload Compiler
+IWC is a lightweight CLI tool to **analyze, compare, and guard LLM inference workloads**.  
+It helps you answer a question that most benchmarks and load tests ignore:
 
-IWC is a small but focused tool that **decouples datasets from LLM inference engines** by compiling them into a **canonical workload format**.
+> _“Did my workload shape change — and will that affect inference performance?”_
 
-The goal is to make LLM inference benchmarking:
-- reproducible
-- comparable across engines
-- independent of dataset quirks
-
----
-
-## What Problem This Solves
-
-While benchmarking LLM inference, I repeatedly ran into the same issues:
-
-- Every dataset uses a different structure
-- Inference tools assume their own request format
-- Arrival patterns (burst vs steady vs poisson) are often implicit
-- Re-running the *same* benchmark later is hard to reproduce exactly
-
-IWC solves this by turning datasets into a **single canonical workload JSONL**, along with a **manifest** that captures how that workload was generated.
+Instead of raw request counts or average latency, IWC fingerprints workloads using
+token behavior, arrival patterns, and session structure — and lets you **fail CI**
+when those properties drift.
 
 ---
 
-## What IWC Produces
+## Why IWC exists
 
-### 1. Workload JSONL (canonical format)
+LLM inference performance is dominated by:
+- **Prompt length vs output length (prefill vs decode)**
+- **Burstiness vs smooth arrivals**
+- **Session context growth and reuse**
 
-Each line represents **one inference request**:
+Two workloads with the same RPS can behave *very* differently on GPUs.
 
-```json
-{
-  "request_id": "req-000001",
-  "prompt": "Explain KV cache in one sentence.",
-  "max_output_tokens": 128,
-  "arrival_time_ms": 0,
-  "temperature": 0.0,
-  "top_p": 1.0,
-  "streaming": false
-}
+IWC makes those differences explicit and testable.
 
+---
 
-The format is validated against schema/workload.schema.json.
+## Key Features
 
-2. Manifest YAML (reproducibility metadata)
+- 🔍 **Analyze workloads** (tokens, arrivals, sessions)
+- 🔁 **Diff two workloads** to understand how they changed
+- 🧠 **Classify workload type** (bursty API, batch, interactive chat)
+- 🚨 **CI regression gating** (`--fail-on-*`)
+- 🧪 **Golden tests + CI** for stable metrics
+- ⚙️ **Tokenizer-aware** (`simple` or `tiktoken`)
 
-For every workload, IWC writes:
+---
 
-<output>.manifest.yaml
+## Install
 
-
-It contains:
-
-sha256 hashes of input, output, and schema
-
-compiler type
-
-arrival model + parameters
-
-summary stats (num_requests, arrival_span_ms, skipped_records, etc.)
-
-This makes runs auditable and reproducible.
-
-Install
-python -m venv .venv
-source .venv/bin/activate
+```bash
 pip install -e .
+pip install tiktoken
 
-Quickstart (2 minutes)
+Analyze a workload
+python -m iwc analyze examples/session_chat_5turns_cumulative.jsonl \
+  --tokenizer tiktoken --tokenizer-model gpt-4o-mini
+Example output:
+WORKLOAD SUMMARY
+----------------
+Requests           : 5
+Tokenizer          : tiktoken:gpt-4o-mini
+WORKLOAD TYPE      : smooth, prefill-heavy, high-reuse
 
-Convert a dataset into a canonical inference workload:
+TOKENS
+-----
+Avg prompt tokens  : 51.40
+P90 prompt tokens  : 76
+Prefill dominance : high
 
-iwc compile simple-json --input data.json --output workload.jsonl
-iwc validate workload.jsonl
+ARRIVAL PROFILE
+---------------
+Mean RPS           : 2.50
+Burstiness (CV)    : 0.00
 
+SESSION ANALYSIS
+---------------
+Sessions detected  : 1
+Avg turns/session  : 5
+Prompt reuse ratio : 0.71
 
-This produces:
+Compare two workloads (diff)
+python -m iwc diff \
+  examples/session_chat_5turns.jsonl \
+  examples/session_chat_5turns_cumulative.jsonl \
+  --tokenizer tiktoken --tokenizer-model gpt-4o-mini
+This answers:
 
-workload.jsonl
+Did prompt length increase?
 
-workload.jsonl.manifest.yaml
+Did prefill dominate more?
 
-You can now feed workload.jsonl into any inference engine.
+Did the workload shift from batch → chat?
 
-Supported Compilers
-1. Simple JSON
+Did burstiness or reuse change?
 
-Accepted input formats:
+CI-friendly diff (JSON)
+python -m iwc diff A.jsonl B.jsonl \
+  --format json \
+  --tokenizer tiktoken --tokenizer-model gpt-4o-mini
 
-["prompt1", "prompt2", ...]
+Regression gating (fail CI if workload shape changes)
+python -m iwc diff A.jsonl B.jsonl \
+  --fail-on-prefill-delta 0.05 \
+  --fail-on-reuse-delta 0.05 \
+  --fail-on-burstiness-delta 0.5
 
-[{"prompt": "..."}]
+If thresholds are exceeded:
 
-iwc compile simple-json --input data.json --output out.jsonl
-iwc validate out.jsonl
+Diff is printed
 
-2. ShareGPT
+CI fails with exit code 2
 
-Supports common ShareGPT-style JSON variants:
+This prevents accidental performance regressions due to workload drift.
+What the metrics mean (brief)
 
-conversations with human/gpt or user/assistant
+Prefill dominance
+Fraction of tokens spent in prompt processing vs output generation.
+High values → memory-bandwidth heavy, KV-cache pressure.
 
-messages with role/content
+Burstiness (CV)
+Coefficient of variation of inter-arrival times.
+High values → scheduler stress, latency spikes.
 
-Single-turn mode
+Prompt reuse ratio
+How much of each prompt is repeated session context.
+High values → chat-like workloads.
 
-Takes the first user message per record.
+Primary workload class
 
-iwc compile sharegpt \
-  --input sharegpt.json \
-  --output sh_single.jsonl \
-  --mode single-turn
+bursty-api
 
-iwc validate sh_single.jsonl
+batch/offline
 
-Session mode
+interactive-chat (prefill-heavy)
 
-Packs a multi-turn conversation into a single prompt transcript.
+When to use IWC
 
-iwc compile sharegpt \
-  --input sharegpt.json \
-  --output sh_session.jsonl \
-  --mode session \
-  --user-tag "User" \
-  --assistant-tag "Assistant" \
-  --separator "\n"
+Before running expensive inference benchmarks
 
-Arrival Models
+When changing datasets or prompt construction
 
-IWC explicitly models request arrival patterns.
+In CI to block silent workload regressions
 
-Fixed-step (default)
---arrival fixed-step --arrival-step-ms 100
+When comparing synthetic vs real traffic traces
 
-Poisson arrivals (realistic traffic)
---arrival poisson --rate-rps 5 --seed 123
+Status
 
+✅ Core analyze + diff complete
 
-Arrivals are seeded for reproducibility.
+✅ Golden tests
 
-Validation
+✅ GitHub Actions CI
 
-Validate any workload against the schema:
-
-iwc validate workload.jsonl
-iwc validate ./folder_with_jsonl_files/
-
-Design Notes
-
-ShareGPT session mode emits one request per conversation
-
-Per-turn workloads would require schema extensions (session_id, turn_id)
-
-Manifest stores escaped separators for readability
-
-iwc_version is read dynamically from package metadata
-
-Roadmap
-
-Additional dataset adapters (Alpaca, OpenAI chat logs, MT-Bench)
-
-Optional schema extension for turn-level workloads
-
-Runner integration (vLLM / TGI)
-
-Metric hooks for latency, throughput, and energy efficiency
-
-
+🚧 Visualizations and fingerprint export planned
