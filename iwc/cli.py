@@ -15,6 +15,7 @@ from iwc.compile import (
 from iwc.export import ExportAiperfConfig, export_aiperf
 from iwc.labeler.heuristics import label_record
 from iwc.report import build_report, format_report, report_to_dict
+from iwc.diff.cli import add_diff_subcommand
 
 
 def _canonical_json_line(obj: dict) -> str:
@@ -165,6 +166,8 @@ def cmd_export_aiperf(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="iwc")
     sub = parser.add_subparsers(dest="cmd", required=True)
+    add_diff_subcommand(sub)
+
 
     # ✅ analyze
     add_analyze_subcommand(sub)
