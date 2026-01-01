@@ -4,6 +4,8 @@ import argparse
 
 from .read_jsonl import iter_requests_jsonl
 from .summary import build_summary, render_summary
+from iwc.diff.cli import add_diff_subcommand
+
 
 
 def add_analyze_subcommand(subparsers: argparse._SubParsersAction) -> None:

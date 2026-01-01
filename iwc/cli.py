@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 from pathlib import Path
@@ -15,6 +17,8 @@ from iwc.compile import (
 from iwc.export import ExportAiperfConfig, export_aiperf
 from iwc.labeler.heuristics import label_record
 from iwc.report import build_report, format_report, report_to_dict
+
+# Diff
 from iwc.diff.cli import add_diff_subcommand
 
 
@@ -166,10 +170,15 @@ def cmd_export_aiperf(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="iwc")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # --------------------
+    # diff (Diff Lite enhancements are handled inside iwc.diff.cli / iwc.diff.core)
+    # --------------------
     add_diff_subcommand(sub)
 
-
-    # ✅ analyze
+    # --------------------
+    # analyze
+    # --------------------
     add_analyze_subcommand(sub)
 
     # --------------------
@@ -223,7 +232,7 @@ def main() -> None:
     p_jl.add_argument("--output", required=True)
     p_jl.add_argument("--manifest", default=None)
 
-    p_jl.add_argument("--prompt-format", default="text")
+    p_jl.add_argument("--prompt-format", choices=["raw","chatml","openai_messages"], default="raw")
     p_jl.add_argument("--max-output-tokens", type=int, default=128)
     p_jl.add_argument("--temperature", type=float, default=0.0)
     p_jl.add_argument("--top-p", type=float, default=1.0)
@@ -260,7 +269,11 @@ def main() -> None:
     p_ai = exp_sub.add_parser("aiperf", help="Export workload JSONL into aiperf-style trace JSONL.")
     p_ai.add_argument("--input", required=True)
     p_ai.add_argument("--output", required=True)
-    p_ai.add_argument("--manifest", default=None, help="Path to output export manifest YAML. Default: <output>.manifest.yaml")
+    p_ai.add_argument(
+        "--manifest",
+        default=None,
+        help="Path to output export manifest YAML. Default: <output>.manifest.yaml",
+    )
     p_ai.add_argument("--source-manifest", default=None, help="Compile manifest YAML to link for provenance.")
     p_ai.add_argument("--time-mode", choices=["timestamp", "delay"], default="timestamp")
     p_ai.set_defaults(func=cmd_export_aiperf)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 from iwc.analyze.summary import WorkloadSummary
 
@@ -175,6 +175,8 @@ def diff_to_dict(d: SummaryDiff, a_label: str = "A", b_label: str = "B") -> Dict
             for r in d.rows
         ],
     }
+
+
 def check_regressions(
     d: SummaryDiff,
     burstiness_delta: float | None = None,
@@ -228,3 +230,229 @@ def check_regressions(
             msgs.append(f"Prompt tokens P90 changed by {v:.1f} (> {prompt_p90_delta:.1f})")
 
     return msgs
+
+
+# --------------------------
+# Diff Lite (CORE DIFF)
+# --------------------------
+
+CORE_THRESHOLDS = {
+    "prefill_p90_abs": 0.05,      # |Δ| > 0.05
+    "prompt_p90_rel": 0.10,       # |Δ|/max(A,B) > 10%
+    "burstiness_abs": 0.50,       # |Δ| > 0.5
+    "mean_rps_rel_a": 0.10,       # |Δ|/A > 10%
+    "reuse_abs": 0.05,            # |Δ| > 0.05 (only when both have sessions)
+}
+
+
+def _abs_delta(a: float, b: float) -> float | None:
+    if _is_nan(a) or _is_nan(b):
+        return None
+    return abs(b - a)
+
+
+def _rel_delta_over_max(a: float, b: float) -> float | None:
+    if _is_nan(a) or _is_nan(b):
+        return None
+    denom = max(abs(a), abs(b), 1e-9)
+    return abs(b - a) / denom
+
+
+def _rel_delta_over_a(a: float, b: float) -> float | None:
+    if _is_nan(a) or _is_nan(b):
+        return None
+    denom = max(abs(a), 1e-9)
+    return abs(b - a) / denom
+
+
+@dataclass(frozen=True)
+class CoreRow:
+    metric: str
+    a: str
+    b: str
+    delta: str
+    status: str  # "OK" or "FLAG"
+    reason: str  # threshold explanation (for JSON / debugging)
+
+
+def build_core_diff(d: SummaryDiff) -> Tuple[List[CoreRow], List[str], bool]:
+    """
+    Core metrics (3–5) + flags.
+
+    Rules:
+    - Never output NaN as a metric row (omit it).
+    - If sessions exist on one side but not the other, emit a structural FLAG line.
+    """
+    a = d.a
+    b = d.b
+
+    rows: List[CoreRow] = []
+    structural: List[str] = []
+    any_flag = False
+
+    def add_row(metric: str, a_val: float, b_val: float, nd: int, flag: bool, reason: str, as_int: bool = False) -> None:
+        nonlocal any_flag
+        if _is_nan(a_val) or _is_nan(b_val):
+            return
+
+        a_s = _fmt_int(a_val) if as_int else _fmt_num(a_val, nd)
+        b_s = _fmt_int(b_val) if as_int else _fmt_num(b_val, nd)
+        delta_s = _fmt_delta(a_val, b_val, 0 if as_int else nd)
+
+        rows.append(
+            CoreRow(
+                metric=metric,
+                a=a_s,
+                b=b_s,
+                delta=delta_s,
+                status="FLAG" if flag else "OK",
+                reason=reason,
+            )
+        )
+        any_flag = any_flag or flag
+
+    # 1) Prefill dominance P90 (abs delta)
+    ap = a.prefill_dominance.p90
+    bp = b.prefill_dominance.p90
+    v = _abs_delta(ap, bp)
+    if v is not None:
+        thr = CORE_THRESHOLDS["prefill_p90_abs"]
+        add_row(
+            "Prefill dominance P90",
+            ap,
+            bp,
+            nd=3,
+            flag=(v > thr),
+            reason=f"|Δ|={v:.3f} > {thr:.3f}",
+            as_int=False,
+        )
+
+    # 2) Prompt tokens P90 (relative over max)
+    at = a.prompt_tokens.p90
+    bt = b.prompt_tokens.p90
+    rel = _rel_delta_over_max(at, bt)
+    if rel is not None:
+        thr = CORE_THRESHOLDS["prompt_p90_rel"]
+        add_row(
+            "Prompt tokens P90",
+            at,
+            bt,
+            nd=0,
+            flag=(rel > thr),
+            reason=f"|Δ|/max={rel:.3f} > {thr:.3f}",
+            as_int=True,
+        )
+
+    # 3) Burstiness CV (abs delta)
+    acv = a.arrivals.burstiness_cv
+    bcv = b.arrivals.burstiness_cv
+    v = _abs_delta(acv, bcv)
+    if v is not None:
+        thr = CORE_THRESHOLDS["burstiness_abs"]
+        add_row(
+            "Burstiness (CV)",
+            acv,
+            bcv,
+            nd=2,
+            flag=(v > thr),
+            reason=f"|Δ|={v:.3f} > {thr:.3f}",
+            as_int=False,
+        )
+
+    # 4) Mean RPS (relative over A)
+    arps = a.arrivals.mean_rps
+    brps = b.arrivals.mean_rps
+    rel = _rel_delta_over_a(arps, brps)
+    if rel is not None:
+        thr = CORE_THRESHOLDS["mean_rps_rel_a"]
+        add_row(
+            "Mean RPS",
+            arps,
+            brps,
+            nd=2,
+            flag=(rel > thr),
+            reason=f"|Δ|/A={rel:.3f} > {thr:.3f}",
+            as_int=False,
+        )
+
+    # 5) Prompt reuse ratio (tokens): only meaningful if both have sessions.
+    a_has = bool(a.sessions.sessions_detected)
+    b_has = bool(b.sessions.sessions_detected)
+
+    if a_has != b_has:
+        structural.append(
+            f"Sessions mismatch: A={'present' if a_has else 'none'}, B={'present' if b_has else 'none'} (FLAG)"
+        )
+        any_flag = True
+    elif a_has and b_has:
+        aru = a.sessions.prompt_reuse_ratio_tokens
+        bru = b.sessions.prompt_reuse_ratio_tokens
+        v = _abs_delta(aru, bru)
+        if v is not None:
+            thr = CORE_THRESHOLDS["reuse_abs"]
+            add_row(
+                "Prompt reuse ratio (tokens)",
+                aru,
+                bru,
+                nd=3,
+                flag=(v > thr),
+                reason=f"|Δ|={v:.3f} > {thr:.3f}",
+                as_int=False,
+            )
+
+    return rows, structural, any_flag
+
+
+def core_diff_to_dict(d: SummaryDiff, a_label: str, b_label: str) -> Dict[str, Any]:
+    rows, structural, any_flag = build_core_diff(d)
+    return {
+        "a_label": a_label,
+        "b_label": b_label,
+        "any_flag": any_flag,
+        "thresholds": CORE_THRESHOLDS,
+        "structural_flags": structural,
+        "metrics": [
+            {
+                "metric": r.metric,
+                "a": r.a,
+                "b": r.b,
+                "delta": r.delta,
+                "status": r.status,
+                "reason": r.reason,
+            }
+            for r in rows
+        ],
+    }
+
+
+def render_core_diff(d: SummaryDiff, a_label: str = "A", b_label: str = "B") -> Tuple[str, bool]:
+    rows, structural, any_flag = build_core_diff(d)
+
+    lines: List[str] = []
+    lines.append("CORE DIFF")
+    lines.append("---------")
+    lines.append(f"A (baseline) : {a_label}")
+    lines.append(f"B (candidate): {b_label}")
+    lines.append("")
+
+    for s in structural:
+        lines.append(s)
+    if structural:
+        lines.append("")
+
+    if not rows:
+        lines.append("(no core metrics applicable)")
+        return "\n".join(lines), any_flag
+
+    col1 = max(len(r.metric) for r in rows)
+    col2 = max(len(r.a) for r in rows)
+    col3 = max(len(r.b) for r in rows)
+
+    header = f"{'Metric'.ljust(col1)}  {'A'.ljust(col2)}  {'B'.ljust(col3)}  Δ(B-A)   Status"
+    lines.append(header)
+    lines.append("-" * len(header))
+
+    for r in rows:
+        lines.append(f"{r.metric.ljust(col1)}  {r.a.ljust(col2)}  {r.b.ljust(col3)}  {r.delta.ljust(7)}  {r.status}")
+
+    return "\n".join(lines), any_flag

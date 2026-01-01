@@ -3,10 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from iwc.diff.core import core_diff_to_dict
+
 
 from iwc.analyze.read_jsonl import iter_requests_jsonl
 from iwc.analyze.summary import build_summary
-from iwc.diff.core import diff_summaries, render_diff, diff_to_dict, check_regressions
+from iwc.diff.core import (
+    diff_summaries,
+    render_diff,
+    diff_to_dict,
+    check_regressions,
+    render_core_diff,
+)
 
 
 def add_diff_subcommand(subparsers: argparse._SubParsersAction) -> None:
@@ -19,7 +27,12 @@ def add_diff_subcommand(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--format", choices=["text", "json"], default="text", help="Output format.")
     p.add_argument("--only-changed", action="store_true", help="Only show rows with a non-zero delta (text mode).")
 
-    # NEW: fail-on thresholds (CI gating)
+    # NEW: Diff Lite core summary UX
+    p.add_argument("--summary", action="store_true", help="Print core 3–5 metrics + flags (Diff Lite).")
+    p.add_argument("--verbose", action="store_true", help="With --summary, also print the full table after the core block.")
+    p.add_argument("--fail-on-any-flag", action="store_true", help="Exit 2 if any Diff Lite core flag triggers (CI friendly).")
+
+    # Legacy: fail-on thresholds (CI gating)
     p.add_argument("--fail-on-burstiness-delta", type=float, default=None,
                    help="Fail if |Δ burstiness CV| exceeds this value.")
     p.add_argument("--fail-on-prefill-delta", type=float, default=None,
@@ -46,6 +59,7 @@ def _run_diff(args: argparse.Namespace) -> None:
 
     d = diff_summaries(a_sum, b_sum)
 
+    # Legacy regressions (existing knobs)
     regressions = check_regressions(
         d,
         burstiness_delta=args.fail_on_burstiness_delta,
@@ -55,23 +69,56 @@ def _run_diff(args: argparse.Namespace) -> None:
         prompt_p90_delta=args.fail_on_p90_prompt_delta,
     )
 
+    # Diff Lite core flags
+    core_txt, any_core_flag = render_core_diff(d, a_label=str(a_path), b_label=str(b_path))
+
+    # --------------------
+    # JSON mode
+    # --------------------
     if args.format == "json":
         obj = diff_to_dict(d, a_label=str(a_path), b_label=str(b_path))
+
+        # include core summary block (structured) when --summary is used
+        if args.summary:
+            obj["core_diff_text"] = core_txt
+            obj["core_any_flag"] = any_core_flag
+
+        # include legacy regressions if any
         if regressions:
             obj["regressions"] = regressions
-            obj["status"] = "fail"
-        else:
-            obj["status"] = "ok"
+
+        # status logic:
+        # - fail if any legacy regression (existing behavior)
+        # - also fail if --fail-on-any-flag and a core flag triggered
+        status_fail = bool(regressions) or (args.fail_on_any_flag and any_core_flag)
+        obj["status"] = "fail" if status_fail else "ok"
+
         print(json.dumps(obj, indent=2, sort_keys=True))
-        if regressions:
+        if status_fail:
             raise SystemExit(2)
         return
 
-    print(render_diff(d, a_label=str(a_path), b_label=str(b_path), only_changed=args.only_changed))
+    # --------------------
+    # TEXT mode
+    # --------------------
+    if args.summary:
+        print(core_txt)
+        if args.verbose:
+            print("")
+            print(render_diff(d, a_label=str(a_path), b_label=str(b_path), only_changed=args.only_changed))
+    else:
+        print(render_diff(d, a_label=str(a_path), b_label=str(b_path), only_changed=args.only_changed))
+
+    # Print legacy regressions (if any)
     if regressions:
         print("")
         print("REGRESSION")
         print("----------")
         for r in regressions:
             print(f"- {r}")
+
+    # Exit codes (CI)
+    if args.fail_on_any_flag and any_core_flag:
+        raise SystemExit(2)
+    if regressions:
         raise SystemExit(2)
