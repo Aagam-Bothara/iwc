@@ -1,5 +1,5 @@
-{"role":"user","text":"You are a helpful assistant. My name is Aagam.","timestamp":0,"type":"single_turn"}
-{"role":"user","text":"What is my name?","timestamp":500,"type":"single_turn"}
-{"role":"user","text":"Now answer with exactly one word.","timestamp":1000,"type":"single_turn"}
-{"role":"user","text":"List two hobbies I might have.","timestamp":1500,"type":"single_turn"}
-{"role":"user","text":"Say goodbye.","timestamp":2000,"type":"single_turn"}
+{"max_output_tokens":32,"role":"user","text":"You are a helpful assistant. My name is Aagam.","timestamp":0,"type":"single_turn"}
+{"max_output_tokens":16,"role":"user","text":"What is my name?","timestamp":500,"type":"single_turn"}
+{"max_output_tokens":8,"role":"user","text":"Now answer with exactly one word.","timestamp":1000,"type":"single_turn"}
+{"max_output_tokens":24,"role":"user","text":"List two hobbies I might have.","timestamp":1500,"type":"single_turn"}
+{"max_output_tokens":16,"role":"user","text":"Say goodbye.","timestamp":2000,"type":"single_turn"}
