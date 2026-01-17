@@ -28,3 +28,18 @@ jobs:
       - name: Run tests
         run: |
           pytest -q
+
+      - name: CLI smoke test
+        run: |
+          set -euo pipefail
+
+          iwc --help >/dev/null
+
+          # compile -> validate -> analyze -> diff -> fingerprint
+          iwc compile simple-json --input data.json --output /tmp/w.jsonl
+          iwc validate /tmp/w.jsonl >/dev/null
+          iwc analyze /tmp/w.jsonl >/dev/null
+          iwc diff /tmp/w.jsonl /tmp/w.jsonl --summary >/dev/null
+          iwc fingerprint --input /tmp/w.jsonl >/dev/null
+
+          echo "CLI smoke OK"
